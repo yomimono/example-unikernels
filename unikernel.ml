@@ -10,8 +10,8 @@ module Main (C: CONSOLE) (K: KV_RO) = struct
   module U = Udp.Make(I)
 
       (* unfortunately, arp isn't exposed in wire_structs nor in Arpv4, so 
-      we reproduce it here, nonoptimally *)
-  cstruct arp {                                                                 
+         we reproduce it here, nonoptimally *)
+      cstruct arp {                                                                 
       uint8_t dst[6];                                                             
       uint8_t src[6];                                                             
       uint16_t ethertype;                                                         
@@ -89,57 +89,94 @@ module Main (C: CONSOLE) (K: KV_RO) = struct
       timeout_then_succeed ();
     ]
 
-    let test_garp_was_read p e u = 
-      let timeout_then_fail _context =
-        let timeout = 1.0 in
-        OS.Time.sleep timeout >>= fun () ->
-        (* make sure the failure is because we wrote an arp request packet *)
-        match P.get_written p with
-        | [] -> Lwt.return (`Failure "Timed out, although we didn't write anything?")
-        | l -> 
-          is_arp_request e (List.hd (List.rev l)) >>= function
-          | true -> Lwt.return (`Failure "sent an arp probe for something that
+  let test_garp_was_read p e u = 
+    let timeout_then_fail _context =
+      let timeout = 1.0 in
+      OS.Time.sleep timeout >>= fun () ->
+      (* make sure the failure is because we wrote an arp request packet *)
+      match P.get_written p with
+      | [] -> Lwt.return (`Failure "Timed out, although we didn't write anything?")
+      | l -> 
+        is_arp_request e (List.hd (List.rev l)) >>= function
+        | true -> Lwt.return (`Failure "sent an arp probe for something that
           just GARPed")
-          | false -> Lwt.return (`Failure "Timed out and wrote something, but it
+        | false -> Lwt.return (`Failure "Timed out and wrote something, but it
         doesn't look like an arp probe")
-      in
-      let try_connecting _context =
-        U.write ~source_port:1000 ~dest_ip:target ~dest_port:1024 u (Cstruct.create
-                                                                       0) >>= fun () ->
-        Lwt.return `Success
-      in
-      Lwt.pick [
-        try_connecting ();
-        timeout_then_fail ()
-      ]
+    in
+    let try_connecting _context =
+      U.write ~source_port:1000 ~dest_ip:target ~dest_port:1024 u (Cstruct.create
+                                                                     0) >>= fun () ->
+      Lwt.return `Success
+    in
+    Lwt.pick [
+      try_connecting ();
+      timeout_then_fail ()
+    ]
 
-    let test_arp_aged_out p e u =
-      (* attempt a connection, which we expect not to succeed *)
-      let arp_age = 15.0 (* set to whatever the arp aging interval is; would be
-                            nice to have this visible *) in
-      let try_connecting _context = 
-        (* make sure we were cool to write initially *)
-        U.write ~source_port:1000 ~dest_ip:target ~dest_port:1024 u
-          (Cstruct.create 0) >>= fun () -> 
-        OS.Time.sleep arp_age >>= fun () ->
-        U.write ~source_port:1000 ~dest_ip:target ~dest_port:1024 u
-          (Cstruct.create 0) >>= fun () -> Lwt.return (`Failure "Sent a packet
+  let test_arp_aged_out p e u =
+    (* attempt a connection, which we expect not to succeed *)
+    let arp_age = 15.0 (* set to whatever the arp aging interval is; would be
+                          nice to have this visible *) in
+    let try_connecting _context = 
+      (* make sure we were cool to write initially *)
+      U.write ~source_port:1000 ~dest_ip:target ~dest_port:1024 u
+        (Cstruct.create 0) >>= fun () -> 
+      OS.Time.sleep arp_age >>= fun () ->
+      U.write ~source_port:1000 ~dest_ip:target ~dest_port:1024 u
+        (Cstruct.create 0) >>= fun () -> Lwt.return (`Failure "Sent a packet
           when we should've had no ARP entry for the destination")
-      in
-      let timeout_then_succeed _context = 
-        OS.Time.sleep (arp_age +. 1.0) >>= fun () ->
-        (* check to make sure we wrote an ARP probe *)
-        match (P.get_written p) with
-        | [] -> Lwt.return (`Failure "Wrote nothing when should've ARP probed")
-        | l -> is_arp_request e (List.hd (List.rev l)) >>= function
-          | true -> Lwt.return `Success
-          | false -> Lwt.return (`Failure "Waited for something, but the last
+    in
+    let timeout_then_succeed _context = 
+      OS.Time.sleep (arp_age +. 1.0) >>= fun () ->
+      (* check to make sure we wrote an ARP probe *)
+      match (P.get_written p) with
+      | [] -> Lwt.return (`Failure "Wrote nothing when should've ARP probed")
+      | l -> is_arp_request e (List.hd (List.rev l)) >>= function
+        | true -> Lwt.return `Success
+        | false -> Lwt.return (`Failure "Waited for something, but the last
           thing we wrote wasn't an ARP request")
+    in
+    Lwt.pick [
+      try_connecting ();
+      timeout_then_succeed ();
+    ]
+
+  let test_queries_retried p e u =
+    let try_connecting _context = 
+      U.write ~source_port:1000 ~dest_ip:silent_host 
+        ~dest_port:1024 u (Cstruct.create 0) >>= fun () ->
+      Lwt.return (`Failure "Sent a UDP packet for a host which can't have been
+                      in the ARP cache")
+    in
+    let timeout_then_succeed _context = 
+      let rec first_k_are_arp_requests l (k : int) =
+        match l, k with
+        | _, 0 -> Lwt.return true
+        | [], _ -> Lwt.return false
+        | p :: more, k when (k > 0) -> 
+          is_arp_request e p >>= fun this_one ->
+          first_k_are_arp_requests more (k - 1) >>= fun others ->
+          Lwt.return (this_one && others)
+        | _, _ -> Lwt.return false
       in
-      Lwt.pick [
-        try_connecting ();
-        timeout_then_succeed ();
-      ]
+      let retry_interval = 1.5 in (* would be better to ask Arp for these
+                                     directly *)
+      let number_of_retries = 3.0 in
+      OS.Time.sleep (retry_interval *. number_of_retries +. 0.25) >>= fun () ->
+      (* check to make sure we wrote three ARP probes *)
+      match (P.get_written p) with
+      | [] -> Lwt.return (`Failure "Wrote nothing when should've ARP probed")
+      | l -> first_k_are_arp_requests (List.rev l) 
+               (int_of_float number_of_retries) >>= function
+        | true -> Lwt.return `Success
+        | false -> Lwt.return 
+                     (`Failure (Printf.sprintf "Last %d sent packets weren't ARP probes"
+                        (int_of_float number_of_retries)))
+    in
+    Lwt.pick [
+      try_connecting ();
+      timeout_then_succeed ()
+    ]
 
   let start c k =
 
@@ -165,22 +202,22 @@ module Main (C: CONSOLE) (K: KV_RO) = struct
       Lwt.return (p, e, i, u)
     in
     let play_pcap (p, e, i, u) =
-    P.listen p (E.input 
-        ~arpv4:(fun buf -> I.input_arpv4 i buf) 
-        ~ipv4:(fun buf -> Lwt.return_unit)
-        ~ipv6:(fun buf -> Lwt.return_unit) e
-               ) >>= fun () ->
+      P.listen p (E.input 
+                    ~arpv4:(fun buf -> I.input_arpv4 i buf) 
+                    ~ipv4:(fun buf -> Lwt.return_unit)
+                    ~ipv6:(fun buf -> Lwt.return_unit) e
+                 ) >>= fun () ->
       Lwt.return (p, e, i, u)
     in
     (* the capture contains a GARP from 192.168.2.7, so we should have an entry
        for that address in the arp cache now *)
     (* send a udp packet to that address, which will result in an attempt to
        resolve the address on the ARP layer.  If the thread returns, all's well. *)
-(* 
+    (* 
 x 1) we age out arp entries after some amount of time
 x 2) we update arp entries in the presence of new information
 x 3) we send out arp probes when trying to resolve unknown addresses
-4) we retry arp probes a predictable number of times, at predictable intervals
+x 4) we retry arp probes a predictable number of times
 5) we stop retrying arp probes once one has succeeded
 6) on successful reception of an arp reply, we don't unnecessarily delay our response
 *)
@@ -189,6 +226,11 @@ x 3) we send out arp probes when trying to resolve unknown addresses
     setup_iface file ip nm >>= fun send_arp_test_stack ->
     play_pcap send_arp_test_stack >>= fun (p, e, i, u) ->
     test_send_arps p e u >>= fun result ->
+    assert_equal ~printer `Success result;
+
+    setup_iface file ip nm >>= fun arp_query_retry_stack ->
+    play_pcap arp_query_retry_stack >>= fun (p, e, i, u) ->
+    test_queries_retried p e u >>= fun result ->
     assert_equal ~printer `Success result;
 
     setup_iface file ip nm >>= fun garp_reads_test_stack ->
