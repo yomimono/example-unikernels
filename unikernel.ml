@@ -67,6 +67,11 @@ module Main (C: CONSOLE) (K: KV_RO) = struct
                                   is_arp := true; Lwt.return_unit)) 
       ~ipv4:not_arp ~ipv6:not_arp e packet >>= fun () -> Lwt.return !is_arp
 
+  let send_traffic u =
+    U.write ~source_port:1000 ~dest_ip:target ~dest_port:1024 u 
+      (Cstruct.create 0) >>= fun () ->
+    Lwt.return `Success
+
   let test_send_arps p e u =
     let try_connecting _context = 
       U.write ~source_port:1000 ~dest_ip:silent_host 
@@ -227,6 +232,14 @@ x 4) we retry arp probes a predictable number of times
     play_pcap send_arp_test_stack >>= fun (p, e, i, u) ->
     test_send_arps p e u >>= fun result ->
     assert_equal ~printer `Success result;
+    
+    setup_iface file ip nm >>= fun (p, e, i, u) ->
+    Lwt.pick [
+      send_traffic u;
+      (play_pcap (p, e, i, u) >>= fun query_stack -> 
+      Lwt.return (`Failure "return_on_reply: playback thread terminated first"))
+    ] >>= fun result ->
+    assert_equal ~printer `Success result;
 
     setup_iface file ip nm >>= fun arp_query_retry_stack ->
     play_pcap arp_query_retry_stack >>= fun (p, e, i, u) ->
@@ -242,6 +255,7 @@ x 4) we retry arp probes a predictable number of times
     play_pcap send_arp_test_stack >>= fun (p, e, i, u) ->
     test_arp_aged_out p e u >>= fun result ->
     assert_equal ~printer `Success result;
+
 
     Lwt.return_unit
 end
