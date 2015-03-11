@@ -1,0 +1,15 @@
+open Mirage
+
+let main =
+  foreign "Unikernel.Main" (console @-> kv_ro @->  job)
+
+let disk1 = crunch "../pcaps"
+
+let tracing = mprof_trace ~size:100000 ()
+
+let () =
+  add_to_opam_packages["pcap-format"; "tcpip"; "mirage-net-pcap";"oUnit"];
+  add_to_ocamlfind_libraries["pcap-format"; "tcpip.ethif"; "tcpip.ipv4";
+                             "tcpip.udp"; "tcpip.dhcpv4"; "mirage-net-pcap";
+                             "oUnit"];
+  register "test_arp" ~tracing [ main $ default_console $ disk1 ]
