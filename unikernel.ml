@@ -3,12 +3,145 @@ open Lwt
 open OUnit
 
 module Main (C: CONSOLE) (K: KV_RO) = struct
+  module P = Netif.Make(K)(OS.Time) 
+  module E = Ethif.Make(P)
+  module I = Ipv4.Make(E)
+  module A = Arpv4.Make(E)
+  module U = Udp.Make(I)
+
+      (* unfortunately, arp isn't exposed in wire_structs nor in Arpv4, so 
+      we reproduce it here, nonoptimally *)
+  cstruct arp {                                                                 
+      uint8_t dst[6];                                                             
+      uint8_t src[6];                                                             
+      uint16_t ethertype;                                                         
+      uint16_t htype;                                                             
+      uint16_t ptype;                                                             
+      uint8_t hlen;                                                               
+      uint8_t plen;                                                               
+      uint16_t op;                                                                
+      uint8_t sha[6];                                                             
+      uint32_t spa;                                                               
+      uint8_t tha[6];                                                             
+      uint32_t tpa                                                                
+    } as big_endian              
+
+    cenum op {
+      Op_request = 1;
+      Op_reply
+    } as uint16_t
+
+  let file = "mirage_dhcp_discover.pcap"
+  (* arbitrary IP on a network matching the one in the pcap *)
+  let ip = Ipaddr.V4.of_string_exn "192.168.2.222"
+  let nm = Ipaddr.V4.of_string_exn "255.255.255.0"
+  (* GARP emitter in pcap *)
+  let target = Ipaddr.V4.of_string_exn "192.168.2.7"
+  (* one of many hosts for which there is no traffic in the pcap *)
+  let silent_host = Ipaddr.V4.of_string_exn "192.168.2.4"
+
+  let printer = function
+    | `Success -> "Success"
+    | `Failure s -> s
+
+  let is_arp_request e packet =
+    (* E.input only wants things that return unit Lwt.t, so
+           we need to signal which branch we took through side effects *)
+    let is_arp = ref false in
+    let not_arp = fun buf -> (is_arp := false; Lwt.return_unit) in
+    let is_arp_probe packet =
+      match (get_arp_op packet) with
+      | 1 -> true
+      | _ -> false
+    in
+    let came_from_us packet =
+      match Macaddr.compare (E.mac e) (Macaddr.of_bytes_exn (copy_arp_src
+                                                               packet)) with
+      | 0 -> true
+      | _ -> false
+    in
+    (* use E.input to get tcpip to parse this for us *)
+    (* don't need to worry about mac filtering in ethif because we're
+       looking for something that will have dst = broadcast *)
+    E.input ~arpv4:(fun buf -> (if is_arp_probe buf && came_from_us buf then 
+                                  is_arp := true; Lwt.return_unit)) 
+      ~ipv4:not_arp ~ipv6:not_arp e packet >>= fun () -> Lwt.return !is_arp
+
+  let test_send_arps p e u =
+    let try_connecting _context = 
+      U.write ~source_port:1000 ~dest_ip:silent_host 
+        ~dest_port:1024 u (Cstruct.create 0) >>= fun () ->
+      Lwt.return (`Failure "Sent a UDP packet for a host which can't have been
+                      in the ARP cache")
+    in
+    let timeout_then_succeed _context = 
+      OS.Time.sleep 1.0 >>= fun () ->
+      (* check to make sure we wrote an ARP probe *)
+      match (P.get_written p) with
+      | [] -> Lwt.return (`Failure "Wrote nothing when should've ARP probed")
+      | l -> is_arp_request e (List.hd (List.rev l)) >>= function
+        | true -> Lwt.return `Success
+        | false -> Lwt.return (`Failure "Waited for something, but the last
+          thing we wrote wasn't an ARP request")
+    in
+    Lwt.pick [
+      try_connecting ();
+      timeout_then_succeed ();
+    ]
+
+    let test_garp_was_read p e u = 
+      let timeout_then_fail _context =
+        let timeout = 1.0 in
+        OS.Time.sleep timeout >>= fun () ->
+        (* make sure the failure is because we wrote an arp request packet *)
+        match P.get_written p with
+        | [] -> Lwt.return (`Failure "Timed out, although we didn't write anything?")
+        | l -> 
+          is_arp_request e (List.hd (List.rev l)) >>= function
+          | true -> Lwt.return (`Failure "sent an arp probe for something that
+          just GARPed")
+          | false -> Lwt.return (`Failure "Timed out and wrote something, but it
+        doesn't look like an arp probe")
+      in
+      let try_connecting _context =
+        U.write ~source_port:1000 ~dest_ip:target ~dest_port:1024 u (Cstruct.create
+                                                                       0) >>= fun () ->
+        Lwt.return `Success
+      in
+      Lwt.pick [
+        try_connecting ();
+        timeout_then_fail ()
+      ]
+
+    let test_arp_aged_out p e u =
+      (* attempt a connection, which we expect not to succeed *)
+      let arp_age = 15.0 (* set to whatever the arp aging interval is; would be
+                            nice to have this visible *) in
+      let try_connecting _context = 
+        (* make sure we were cool to write initially *)
+        U.write ~source_port:1000 ~dest_ip:target ~dest_port:1024 u
+          (Cstruct.create 0) >>= fun () -> 
+        OS.Time.sleep arp_age >>= fun () ->
+        U.write ~source_port:1000 ~dest_ip:target ~dest_port:1024 u
+          (Cstruct.create 0) >>= fun () -> Lwt.return (`Failure "Sent a packet
+          when we should've had no ARP entry for the destination")
+      in
+      let timeout_then_succeed _context = 
+        OS.Time.sleep (arp_age +. 1.0) >>= fun () ->
+        (* check to make sure we wrote an ARP probe *)
+        match (P.get_written p) with
+        | [] -> Lwt.return (`Failure "Wrote nothing when should've ARP probed")
+        | l -> is_arp_request e (List.hd (List.rev l)) >>= function
+          | true -> Lwt.return `Success
+          | false -> Lwt.return (`Failure "Waited for something, but the last
+          thing we wrote wasn't an ARP request")
+      in
+      Lwt.pick [
+        try_connecting ();
+        timeout_then_succeed ();
+      ]
 
   let start c k =
-    let module P = Netif.Make(K)(OS.Time) in
-    let module E = Ethif.Make(P) in
-    let module I = Ipv4.Make(E) in
-    let module U = Udp.Make(I) in
 
     let or_error c name fn t =
       fn t >>= function 
@@ -16,91 +149,57 @@ module Main (C: CONSOLE) (K: KV_RO) = struct
       | `Ok t -> return t
     in
 
-    let file = "mirage_dhcp_discover.pcap" in 
-    let ip = (Ipaddr.V4.of_string_exn "192.168.2.222") in
-    let nm = (Ipaddr.V4.of_string_exn "255.255.255.0") in
 
     let setup_iface file ip nm =
+
       let pcap_netif_id = P.id_of_desc ~timing:None ~source:k ~read:file in
       (* build interface on top of netif *)
       or_error c "pcap_netif" P.connect pcap_netif_id >>= fun p ->
       or_error c "ethif" E.connect p >>= fun e ->
       or_error c "ipv4" I.connect e >>= fun i ->
+      or_error c "udpv4" U.connect i >>= fun u ->
 
       (* set up ipv4 statically *)
-      I.set_ip i (Ipaddr.V4.of_string_exn "192.168.2.222") >>= fun () ->
-      I.set_ip_netmask i (Ipaddr.V4.of_string_exn "255.255.255.0") >>= fun () ->
-
-      or_error c "udpv4" U.connect i >>= fun u ->
+      I.set_ip i ip >>= fun () -> I.set_ip_netmask i nm >>= fun () ->
 
       Lwt.return (p, e, i, u)
     in
-
-    setup_iface file ip nm >>= fun (p, e, i, u) ->
-    C.log_s c "beginning listen...";
-    let noop = fun ~src ~dst buf -> Lwt.return_unit in
-    P.listen p (
-      E.input 
-        ~arpv4:( 
-          fun buf -> I.input_arpv4 i buf
-        ) 
-        ~ipv4:(
-        I.input ~tcp:noop ~udp:noop ~default:(
-            fun ~proto ~src ~dst buf -> Lwt.return_unit
-          ) 
-          i
-      ) ~ipv6:(fun b -> Lwt.return_unit) e
-    ) >>= fun () ->
+    let play_pcap (p, e, i, u) =
+    P.listen p (E.input 
+        ~arpv4:(fun buf -> I.input_arpv4 i buf) 
+        ~ipv4:(fun buf -> Lwt.return_unit)
+        ~ipv6:(fun buf -> Lwt.return_unit) e
+               ) >>= fun () ->
+      Lwt.return (p, e, i, u)
+    in
     (* the capture contains a GARP from 192.168.2.7, so we should have an entry
        for that address in the arp cache now *)
     (* send a udp packet to that address, which will result in an attempt to
        resolve the address on the ARP layer.  If the thread returns, all's well. *)
-    let target = Ipaddr.V4.of_string_exn "192.168.2.7" in
-    let try_connecting _context =
-      U.write ~source_port:1000 ~dest_ip:target ~dest_port:1024 u (Cstruct.create
-                                                                 0) >>= fun () ->
-      Lwt.return `Success
-    in
-    let timeout_then_fail _context =
-      let is_arp_request packet =
-        (* E.input only wants things that return unit Lwt.t, so
-           we need to signal which branch we took through side effects *)
-        let is_arp = ref false in
-        let not_arp = fun buf -> (is_arp := false; Lwt.return_unit) in
-        (* use E.input to get tcpip to parse this for us *)
-        (* don't need to worry about mac filtering in ethif because we're
-           looking for something that will have dst = broadcast *)
-        E.input ~arpv4:(fun buf -> (is_arp := true; Lwt.return_unit)) 
-          ~ipv4:not_arp ~ipv6:not_arp e packet >>= fun () -> Lwt.return !is_arp
-      in
-      let timeout = 1.0 in
-      OS.Time.sleep timeout >>= fun () ->
-      (* make sure the failure is because we wrote an arp request packet *)
-      match P.get_written p with
-      | [] -> Lwt.return (`Failure "Timed out, although we didn't write anything?")
-      | p :: _ -> 
-        is_arp_request p >>= function
-        | true -> Lwt.return (`Failure "Timed out, and we wrote what looks like an arp probe")
-        | false -> Lwt.return (`Failure "Timed out and wrote something, but it
-        doesn't look like an arp probe")
-    in
-    Lwt.pick [
-        try_connecting ();
-        timeout_then_fail ()
-    ] >>= fun result ->
-    let printer = function
-      | `Success -> "Success"
-      | `Failure s -> s
-    in
 (* 
-1) we age out arp entries after some amount of time
-2) we update arp entries in the presence of new information
-3) we send out arp probes when trying to resolve unknown addresses
+x 1) we age out arp entries after some amount of time
+x 2) we update arp entries in the presence of new information
+x 3) we send out arp probes when trying to resolve unknown addresses
 4) we retry arp probes a predictable number of times, at predictable intervals
 5) we stop retrying arp probes once one has succeeded
 6) on successful reception of an arp reply, we don't unnecessarily delay our response
 *)
-
+    (* we really should be doing each of these with a fresh pcap_netif;
+       otherwise we run the risk of contaminating state between runs *)
+    setup_iface file ip nm >>= fun send_arp_test_stack ->
+    play_pcap send_arp_test_stack >>= fun (p, e, i, u) ->
+    test_send_arps p e u >>= fun result ->
     assert_equal ~printer `Success result;
+
+    setup_iface file ip nm >>= fun garp_reads_test_stack ->
+    play_pcap garp_reads_test_stack >>= fun (p, e, i, u) ->
+    test_garp_was_read p e u >>= fun result ->
+    assert_equal ~printer `Success result;
+
+    setup_iface file ip nm >>= fun arp_aging_test_stack ->
+    play_pcap send_arp_test_stack >>= fun (p, e, i, u) ->
+    test_arp_aged_out p e u >>= fun result ->
+    assert_equal ~printer `Success result;
+
     Lwt.return_unit
 end
