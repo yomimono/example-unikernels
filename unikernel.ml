@@ -194,7 +194,7 @@ module Main (C: CONSOLE) (K: KV_RO) = struct
 
     let setup_iface ?(timing=None) file ip nm =
 
-      let pcap_netif_id = P.id_of_desc ~timing ~source:k ~read:file in
+      let pcap_netif_id = P.id_of_desc ~mac:Macaddr.broadcast ~timing ~source:k ~read:file in
       (* build interface on top of netif *)
       or_error c "pcap_netif" P.connect pcap_netif_id >>= fun p ->
       or_error c "ethif" E.connect p >>= fun e ->
@@ -255,7 +255,6 @@ x 6) on successful reception of an arp reply, we don't unnecessarily delay our r
     play_pcap send_arp_test_stack >>= fun (p, e, i, u) ->
     test_arp_aged_out p e u >>= fun result ->
     assert_equal ~printer `Success result;
-
 
     Lwt.return_unit
 end
