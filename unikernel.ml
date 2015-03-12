@@ -192,9 +192,9 @@ module Main (C: CONSOLE) (K: KV_RO) = struct
     in
 
 
-    let setup_iface file ip nm =
+    let setup_iface ?(timing=None) file ip nm =
 
-      let pcap_netif_id = P.id_of_desc ~timing:None ~source:k ~read:file in
+      let pcap_netif_id = P.id_of_desc ~timing ~source:k ~read:file in
       (* build interface on top of netif *)
       or_error c "pcap_netif" P.connect pcap_netif_id >>= fun p ->
       or_error c "ethif" E.connect p >>= fun e ->
@@ -224,7 +224,7 @@ x 2) we update arp entries in the presence of new information
 x 3) we send out arp probes when trying to resolve unknown addresses
 x 4) we retry arp probes a predictable number of times
 5) we stop retrying arp probes once one has succeeded
-6) on successful reception of an arp reply, we don't unnecessarily delay our response
+x 6) on successful reception of an arp reply, we don't unnecessarily delay our response
 *)
     (* we really should be doing each of these with a fresh pcap_netif;
        otherwise we run the risk of contaminating state between runs *)
@@ -233,7 +233,7 @@ x 4) we retry arp probes a predictable number of times
     test_send_arps p e u >>= fun result ->
     assert_equal ~printer `Success result;
     
-    setup_iface file ip nm >>= fun (p, e, i, u) ->
+    setup_iface ~timing:(Some 1.0) file ip nm >>= fun (p, e, i, u) ->
     Lwt.pick [
       send_traffic u;
       (play_pcap (p, e, i, u) >>= fun query_stack -> 
