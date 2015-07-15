@@ -104,8 +104,6 @@ module Client (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (Clock: V1.CLOCK)
     let dst = List.hd (IPV4.get_ip right_ip) in
     gossip dst
 
-  (* let module Client (N: V1_LWT.NETIF) (E: V1_LWT.ETHIF) (Clock: V1.CLOCK)
-      (Time: V1_LWT.TIME) (Random: V1.RANDOM) = struct *)
   let start console netif clock random =
     let client_ip = Ipaddr.V4.of_string_exn "192.168.3.10" in
     let server_ip = Ipaddr.V4.of_string_exn "192.168.3.2" in
@@ -121,44 +119,3 @@ module Client (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (Clock: V1.CLOCK)
     Lwt.return_unit
 
 end
-
-(* 
-let ok_go () = (*
-  let buffer = MProf_unix.mmap_buffer ~size:1000000 "demo_network_trace.ctf" in
-  let trace_config = MProf.Trace.Control.make buffer MProf_unix.timestamper in
-  MProf.Trace.Control.start trace_config; *)
-  Log.set_log_level Log.WARN;
-  Log.color_on ();
-  Log.set_output stdout;
-  let backend = B.create ~yield:(fun () -> Lwt_main.yield ()) ~use_async_readers:true () in
-  let get_listener (_, _, _, _, _, listener) = listener in
-  servers ~backend >>= fun (s1, s2) ->
-  Log.warn "DEMO: servers started";
-  (* last entry of servers is a listener for inclusion in Lwt.join *)
-  (* some clients talk only to s1, some to only s2 *)
-  clients ~backend 40 49 >>= fun s1_clients ->
-  Log.warn "DEMO: clients contacting s1 online";
-  clients ~backend 50 59 >>= fun s2_clients ->
-  Log.warn "DEMO: clients contacting s2 online";
-  (* "left" and "right" clients periodically send one another IP messages *)
-  clients ~backend 10 19 >>= fun left_clients ->
-  Log.warn "DEMO: crosstalk left-hand clients online";
-  clients ~backend 20 29 >>= fun right_clients ->
-  Log.warn "DEMO: crosstalk right-hand clients online";
-  Log.warn "Starting demo in %s with %d nodes" root (2
-                                                     + (List.length s1_clients)
-                                                     + (List.length s2_clients)
-                                                     + (List.length left_clients)
-                                                     + (List.length right_clients));
-
-  (* clients are now up and running ARP listeners *)
-  Lwt.choose [
-    get_listener s1;
-    get_listener s2;
-    Lwt_list.iter_p (converse s1) s1_clients;
-    Lwt_list.iter_p (converse s2) s2_clients;
-    Lwt_list.iter_p crosstalk (List.combine left_clients right_clients);
-  ] >>= fun _ -> Lwt.return_unit
-
-let () =
-  Lwt_main.run (ok_go ()) *)
