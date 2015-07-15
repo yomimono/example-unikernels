@@ -11,52 +11,6 @@ let root = "demo_results"
 
 let strip = Ipaddr.V4.to_string
 
-(*
-let module Server (N: V1_LWT.NETIF) (E: V1_LWT.ETHIF) (Clock: V1.CLOCK)
-    (Time: V1_LWT.TIME) (Random: V1.RANDOM) (C: V1_LWT.CONSOLE) = struct
-  module A = Irmin_arp.Arp.Make(E)(Clock)(Time)(Random)(Irmin_mem.Make)
-  module IPV4 = Ipv4.Make(E)(A)
-  module TCP = Tcp.Flow.Make(IPV4)(Time)(Clock)(Random)
-
-  let start_tcp_listener ~port ~fn (netif, ethif, arp, ip) =
-    let chooser = function | n when n = port -> Some fn | _ -> None in
-    or_error "tcp" TCP.connect ip >>= fun tcp ->
-    let listener = (
-      V.listen netif (E.input
-                        ~ipv6:(fun buf -> Lwt.return_unit)
-                        ~arpv4:(fun buf -> A.input arp buf)
-                        ~ipv4:(
-                          IPV4.input
-                            ~tcp:(TCP.input tcp ~listeners:chooser)
-                            ~udp:(fun ~src ~dst _buf -> Lwt.return_unit)
-                            ~default:(fun ~proto ~src ~dst _ -> Lwt.return_unit)
-                            ip
-                        )
-                        ethif )
-    ) in
-    Lwt.return (netif, ethif, arp, ip, tcp, listener)
-
-  let servers ~backend =
-    let rec echo flow =
-      let ignore_errors fn = function
-        | `Ok q -> fn q
-        | `Error _ | `Eof -> Lwt.return_unit
-      in
-      (* try echoing, but don't really mind if we fail *)
-      TCP.read flow >>= ignore_errors (fun buf ->
-          TCP.write flow buf >>= fun _ -> Lwt.return_unit
-        ) >>= fun () -> echo flow
-    in
-    let start_server ~root ~node ~ip =
-      get_arp ~backend ~root ~node ()
-      >>= start_ip ip
-      >>= start_tcp_listener ~port:echo_port ~fn:echo
-    in
-    start_server ~root ~node:"server_1" ~ip:server_1_ip >>= fun s1 ->
-    start_server ~root ~node:"server_2" ~ip:server_2_ip >>= fun s2 ->
-    Lwt.return (s1, s2)
-end
-*)
 module Client (C: V1_LWT.CONSOLE) (N: V1_LWT.NETWORK) (Clock: V1.CLOCK)
     (Random: V1.RANDOM) = struct
   module Time = OS.Time
