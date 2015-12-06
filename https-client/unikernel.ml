@@ -55,8 +55,18 @@ module Client (C  : CONSOLE)
               (KV : KV_RO) =
 struct
 
+  module Context = struct
+    let v () = failwith "Context"
+  end
   module L    = Log (C)
   module GHC = Github_clock(Clock)(Time)
+  module Mirage_git_memory =
+    Irmin_mirage.Irmin_git.Memory(Context)(Git.Inflate.None)
+  module Store =
+    Mirage_git_memory(Irmin.Contents.String)(Irmin.Ref.String)(Irmin.Hash.SHA1)
+  let config = Irmin_mirage.Irmin_git.config ()
+  let task = Irmin.Task.create ~date:(Int64.of_int (int_of_float (Clock.time ())))
+      ~owner:"MirageOS Irmin Scraperbot"
 
   let start c _clock _time res con kv =
     let module Resolving_client : Cohttp_lwt.Client = struct
@@ -114,30 +124,39 @@ struct
           return ()                                                                   
         | Two_factor _ -> embed (fail (Failure "get_token doesn't support 2fa, yet")) 
       )))
-    in *)
+    in
     let user token =
       Github.(Monad.(run (User.current_info ~token ()
                                      >|= Response.value))) >>= fun user ->
       Lwt.return (Github_j.string_of_user_info user)
-    in
-    let issues token user repo =
+    in *)
+    let issues local_repo token user repo =
+      let store local_repo path value =
+        Store.master task local_repo >>= fun primary ->
+        Store.update (primary "updating with issue body") path value
+      in
       let open Github in
       let open Monad in
       let issues = Issue.for_repo ~token ~user ~repo () in
       Stream.iter (fun issue ->
-          let num = Github_t.(issue.issue_number) in
-          C.log c (Printf.sprintf "issue %d: %s\n%!" num Github_t.(issue.issue_title));
-          let issue_comments = Issue.comments ~token ~user ~repo ~num () in
+          let issue_id = Github_t.(issue.issue_number) in
+          C.log c (Printf.sprintf "issue %d: %s\n%!" issue_id Github_t.(issue.issue_title));
+          let issue_comments = Issue.comments ~token ~user ~repo ~num:issue_id () in
           Stream.to_list issue_comments
-          >>= fun comments ->
-          List.iter (fun comment ->
+          >>= fun comments -> embed (
+          Lwt_list.iter_p (fun comment ->
+              let comment_id = Int64.to_int (Github_t.(comment.issue_comment_id)) in
+              let path = Irmin.Path.String_list.of_hum (Printf.sprintf
+                                                          "%s/%s/issues/%L/%L"
+                                                          user repo issue_id comment_id) in
               C.log c Github_t.(Printf.sprintf "  > %Ld: %s\n"
-                                  comment.issue_comment_id comment.issue_comment_body)
-            ) comments;
-          return ()
+                                  comment.issue_comment_id
+                                  comment.issue_comment_body);
+              Github_t.(store local_repo path comment.issue_comment_body)
+            ) comments )
         ) issues
     in
-    let repositories token =
+    let scrape_issues user token local_repo =
       let user = "yomimono" in
       Github.(Monad.(run (
         let repos = User.repositories ~token ~user () in
@@ -145,8 +164,7 @@ struct
             C.log c Github_t.(repo.repository_full_name);
             match Github_t.(repo.repository_has_issues) with
             | true ->
-              issues token user (Github_t.(repo.repository_name)) >>= fun _ ->
-              return ()
+              issues local_repo token user (Github_t.(repo.repository_name))
             | false ->
               return ()
         ) repos
@@ -157,8 +175,8 @@ struct
     | `Ok (buf::[]) -> Lwt.return (Github.Token.of_string (Cstruct.to_string buf))
       >>= fun token ->
       L.log_data c "token" (Cstruct.of_string (Github.Token.to_string token)) >>= fun () ->
-    user token >>= fun user -> C.log c ("User: " ^ user);
-    repositories token >>= fun () ->
+      Store.Repo.create config >>= fun repo ->
+      scrape_issues "yomimono" token repo >>= fun () ->
     (* get_token () >>= fun () -> *)
 
     Lwt.return_unit
