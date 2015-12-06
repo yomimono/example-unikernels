@@ -103,7 +103,7 @@ struct
       include Cohttp_lwt.Make_client(HTTP_IO)(Net_IO)
 
     end in
-    let module Github = Github_core.Make(GHC)(Resolving_client) in
+    let module Github = Github_core.Make(GHC)(Resolving_client) in (*
     let get_token () = Github.(Monad.(run (
         let note = "get_token via ocaml-github" in                                    
         Token.create ~user:Github_creds.username ~pass:Github_creds.password ~note ()
@@ -114,7 +114,7 @@ struct
           return ()                                                                   
         | Two_factor _ -> embed (fail (Failure "get_token doesn't support 2fa, yet")) 
       )))
-    in
+    in *)
     let user token =
       Github.(Monad.(run (User.current_info ~token ()
                                      >|= Response.value))) >>= fun user ->
@@ -152,7 +152,11 @@ struct
         ) repos
         )))
     in
-    let token = Github.Token.of_string Github_creds.oauth_token in
+    KV.read kv "token" 0 4096 >>= function
+    | `Error _ | `Ok [] | `Ok (_::_::_) -> L.log_error c "kv_ro error reading token"
+    | `Ok (buf::[]) -> Lwt.return (Github.Token.of_string (Cstruct.to_string buf))
+      >>= fun token ->
+      L.log_data c "token" (Cstruct.of_string (Github.Token.to_string token)) >>= fun () ->
     user token >>= fun user -> C.log c ("User: " ^ user);
     repositories token >>= fun () ->
     (* get_token () >>= fun () -> *)
