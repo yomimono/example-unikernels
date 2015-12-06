@@ -76,7 +76,7 @@ struct
       | `TLS _ -> L.log_error c "TLS-wrapped endpoint claims to be TLS itself"
       | `TCP (server_ip, port) ->
         C.log c ("Lookup succeeded -- will contact " ^ (Ipaddr.to_string server_ip));
-        Conduit_mirage.client endp >>= fun client ->
+        Conduit_mirage.client (`TLS (name, endp)) >>= fun client ->
         C.log c "Conduit client setup completed";
         C.log c "Attempting connection...";
         Conduit_mirage.connect con client >>= fun tls ->
