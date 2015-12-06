@@ -2,7 +2,7 @@ open Lwt
 
 open V1
 open V1_LWT
-
+open Sexplib.Conv
 
 type ('a, 'e, 'c) m = ([< `Ok of 'a | `Error of 'e | `Eof ] as 'c) Lwt.t
 
@@ -42,13 +42,19 @@ let make_tracer dump =
     Lwt_list.iter_s dump msgs in
   (trace, flush)
 
+module Github_clock(Clock : V1.CLOCK) (Time : V1_LWT.TIME) : Github_s.Time = struct
+  let now () = Clock.time ()
+  let sleep n = Time.sleep n
+end
+
 module Client (C  : CONSOLE)
+              (Clock : V1.CLOCK)
+              (Time : V1_LWT.TIME)
               (Resolver : Resolver_lwt.S)
               (Conduit : Conduit_mirage.S)
               (KV : KV_RO) =
 struct
 
-  module X509 = Tls_mirage.X509 (KV) (Clock)
   module L    = Log (C)
 
   open Ipaddr
