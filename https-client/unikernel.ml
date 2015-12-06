@@ -67,40 +67,8 @@ struct
     C.log c "All done.";
     Lwt.return_unit
 
-  let scrupulously_connect c uri host res con =
-    let initial = Cstruct.of_string @@
-      "GET / HTTP/1.1\r\nConnection: Close\r\nHost: " ^ host ^ "\r\n\r\n" in
-    let chat c tls =
-      let rec dump () =
-        Conduit_mirage.Flow.read tls >>== fun buf ->
-        L.log_data c "recv" buf >> dump () in
-      Conduit_mirage.Flow.write tls initial >> dump ()
-    in
-    Resolver_lwt.resolve_uri uri res >>= function
-    | `Unix_domain_socket _ | `Unknown _ | `Vchan_direct _ |
-      `Vchan_domain_socket _ -> L.log_error c "Endpoint resolved to a non-network conduit type"
-    | `TCP endp -> L.log_error c "Endpoint resolved to plain TCP; aborting"
-    | `TLS (name, endp) ->
-      match endp with
-      | `Unix_domain_socket _ | `Unknown _ | `Vchan_direct _ | 
-        `Vchan_domain_socket _ -> L.log_error c "TLS-wrapped endpoint resolved to a non-network conduit type"
-      | `TLS _ -> L.log_error c "TLS-wrapped endpoint claims to be TLS itself"
-      | `TCP (server_ip, port) when port <> 443 -> L.log_error c "TCP-wrapped endpoint is not on port 443"
-      | `TCP (server_ip, port) when port = 443 ->
-        C.log c ("Have verified that Conduit will contact this endpoint via TLS: " ^ (Ipaddr.to_string server_ip));
-        Conduit_mirage.client (`TLS (name, endp)) >>= fun client ->
-        C.log c "Conduit client setup completed";
-        C.log c "Attempting connection...";
-        Conduit_mirage.connect con client >>= fun tls ->
-        chat c tls
-        >>= function
-        | `Error e -> L.log_error c (Conduit_mirage.Flow.error_message e)
-        | `Eof     -> L.log_trace c "eof."
-        | `Ok _    -> assert false
-
   let start c res con kv =
     let uri = Uri.make ~scheme:"https" ~host:"mirage.io" ~port:443 ~path:"/" () in
     opportunistically_connect c uri res con >>= fun () ->
-    scrupulously_connect c uri "mirage.io" res con >>= fun () ->
     Lwt.return_unit
 end
