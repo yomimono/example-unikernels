@@ -40,6 +40,6 @@ let client =
 
 let () =
   let (con, res) = build_stack default_console in
-  add_to_opam_packages [ "dns" ; "tls" ] ;
-  add_to_ocamlfind_libraries [ "dns.mirage"; "tls"; "tls.mirage" ] ;
+  add_to_opam_packages [ "mirage-http"; "dns" ; "tls" ] ;
+  add_to_ocamlfind_libraries [ "mirage-http"; "dns.mirage"; "tls"; "tls.mirage" ] ;
   register ~tracing "tls-client" [ client $ default_console $ res $ con $ disk ]
