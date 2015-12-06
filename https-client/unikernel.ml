@@ -56,25 +56,106 @@ module Client (C  : CONSOLE)
 struct
 
   module L    = Log (C)
+  module GHC = Github_clock(Clock)(Time)
 
-  open Ipaddr
+  let start c _clock _time res con kv =
+    let module Resolving_client : Cohttp_lwt.Client = struct
 
-  let opportunistically_connect c uri res con =
-    C.log c ("Attempting connection to " ^ (Uri.to_string uri));
-    let ctx = Cohttp_mirage.Client.ctx res con in
-    Cohttp_mirage.Client.get ~ctx uri >>= fun (response, body) ->
-    C.log c (Printf.sprintf "opportunistically encrypted connection to %s succeeded!" 
-               (Uri.to_string uri));
-    let response_metadata = Sexplib.Sexp.to_string_hum
-        (Cohttp.Response.sexp_of_t response) in
-    C.log c ("response metadata: "  ^ response_metadata);
-    Cohttp_lwt_body.to_string body >>= fun body ->
-    C.log c ("response body: " ^ body);
-    C.log c "All done.";
-    Lwt.return_unit
+      module Channel = Channel.Make(Conduit_mirage.Flow)
+      module HTTP_IO = Cohttp_mirage_io.Make(Channel)
 
-  let start c res con kv =
-    let uri = Uri.make ~scheme:"https" ~host:"mirage.io" ~port:443 ~path:"/" () in
-    opportunistically_connect c uri res con >>= fun () ->
+      module Net_IO = struct
+
+        module IO = HTTP_IO
+
+        type 'a io = 'a Lwt.t
+        type ic = Channel.t
+        type oc = Channel.t
+        type flow = Conduit_mirage.Flow.flow
+
+        type ctx = {
+          resolver: Resolver_lwt.t;
+          conduit : Conduit_mirage.t;
+        }
+
+        let sexp_of_ctx { resolver; _ } = Resolver_lwt.sexp_of_t resolver
+
+        let default_ctx =
+          { resolver = res; conduit = con }
+
+        let connect_uri ~ctx uri =
+          Resolver_lwt.resolve_uri ~uri ctx.resolver >>= fun endp ->
+          Conduit_mirage.client endp >>= fun client ->
+          Conduit_mirage.connect ctx.conduit client >>= fun flow ->
+          let ch = Channel.create flow in
+          return (flow, ch, ch)
+
+        let _close channel = Lwt.catch (fun () -> Channel.close channel) (fun _ ->
+            return_unit)
+        let close_in ic = ignore_result (_close ic)
+        let close_out ic = ignore_result (_close ic)
+        let close ic oc = ignore_result (_close ic >>= fun () -> _close oc)
+
+      end
+      let ctx resolver conduit = { Net_IO.resolver; conduit }
+
+      (* Build all the core modules from the [Cohttp_lwt] functors *)
+      include Cohttp_lwt.Make_client(HTTP_IO)(Net_IO)
+
+    end in
+    let module Github = Github_core.Make(GHC)(Resolving_client) in
+    let get_token () = Github.(Monad.(run (
+        let note = "get_token via ocaml-github" in                                    
+        Token.create ~user:Github_creds.username ~pass:Github_creds.password ~note ()
+        >>~ function                                                                  
+        | Result auth ->                                                              
+          let token = Token.of_auth auth in                                           
+          prerr_endline (Token.to_string token);                                      
+          return ()                                                                   
+        | Two_factor _ -> embed (fail (Failure "get_token doesn't support 2fa, yet")) 
+      )))
+    in
+    let user token =
+      Github.(Monad.(run (User.current_info ~token ()
+                                     >|= Response.value))) >>= fun user ->
+      Lwt.return (Github_j.string_of_user_info user)
+    in
+    let issues token user repo =
+      let open Github in
+      let open Monad in
+      let issues = Issue.for_repo ~token ~user ~repo () in
+      Stream.iter (fun issue ->
+          let num = Github_t.(issue.issue_number) in
+          C.log c (Printf.sprintf "issue %d: %s\n%!" num Github_t.(issue.issue_title));
+          let issue_comments = Issue.comments ~token ~user ~repo ~num () in
+          Stream.to_list issue_comments
+          >>= fun comments ->
+          List.iter (fun comment ->
+              C.log c Github_t.(Printf.sprintf "  > %Ld: %s\n"
+                                  comment.issue_comment_id comment.issue_comment_body)
+            ) comments;
+          return ()
+        ) issues
+    in
+    let repositories token =
+      let user = "yomimono" in
+      Github.(Monad.(run (
+        let repos = User.repositories ~token ~user () in
+        Stream.iter (fun repo ->
+            C.log c Github_t.(repo.repository_full_name);
+            match Github_t.(repo.repository_has_issues) with
+            | true ->
+              issues token user (Github_t.(repo.repository_name)) >>= fun _ ->
+              return ()
+            | false ->
+              return ()
+        ) repos
+        )))
+    in
+    let token = Github.Token.of_string Github_creds.oauth_token in
+    user token >>= fun user -> C.log c ("User: " ^ user);
+    repositories token >>= fun () ->
+    (* get_token () >>= fun () -> *)
+
     Lwt.return_unit
 end
