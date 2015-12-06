@@ -36,10 +36,11 @@ let build_stack console =
 let tracing = mprof_trace ~size:1000000 ()
 
 let client =
-  foreign "Unikernel.Client" @@ console @-> resolver @-> conduit @-> kv_ro @-> job
+  foreign "Unikernel.Client" @@ console @-> clock @-> time @-> resolver @-> conduit @-> kv_ro @-> job
 
 let () =
   let (con, res) = build_stack default_console in
-  add_to_opam_packages [ "mirage-http"; "dns" ; "tls" ] ;
-  add_to_ocamlfind_libraries [ "mirage-http"; "dns.mirage"; "tls"; "tls.mirage" ] ;
-  register ~tracing "tls-client" [ client $ default_console $ res $ con $ disk ]
+  add_to_opam_packages [ "github"; "mirage-http"; "dns" ; "tls" ] ;
+  add_to_ocamlfind_libraries [ "github"; "mirage-http"; "dns.mirage"; "tls"; "tls.mirage" ] ;
+  register ~tracing "tls-client" [ client $ default_console $ default_clock $
+                                   default_time $ res $ con $ disk ]
