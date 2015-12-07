@@ -29,7 +29,7 @@ let stack console =
 
 
 let build_stack console =
-  let ns = Ipaddr.V4.of_string_exn "208.67.222.222" in
+  let ns = Ipaddr.V4.of_string_exn "192.168.3.1" in
   let stack = stack console in
   (conduit_direct ~tls:true stack), (Mirage.resolver_dns ~ns stack)
 

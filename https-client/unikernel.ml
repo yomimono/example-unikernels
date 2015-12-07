@@ -55,21 +55,11 @@ module Client (C  : CONSOLE)
               (KV : KV_RO) =
 struct
 
-  module Context = struct
-    let v () = failwith "Context"
-  end
   module L    = Log (C)
   module GHC = Github_clock(Clock)(Time)
-  module Mirage_git_memory =
-    Irmin_mirage.Irmin_git.Memory(Context)(Git.Inflate.None)
-  module Store =
-    Mirage_git_memory(Irmin.Contents.String)(Irmin.Ref.String)(Irmin.Hash.SHA1)
-  let config = Irmin_mirage.Irmin_git.config ()
-  let task = Irmin.Task.create ~date:(Int64.of_int (int_of_float (Clock.time ())))
-      ~owner:"MirageOS Irmin Scraperbot"
 
   let start c _clock _time res con kv =
-    let module Resolving_client : Cohttp_lwt.Client = struct
+    let module Resolving_client = struct
 
       module Channel = Channel.Make(Conduit_mirage.Flow)
       module HTTP_IO = Cohttp_mirage_io.Make(Channel)
@@ -113,27 +103,33 @@ struct
       include Cohttp_lwt.Make_client(HTTP_IO)(Net_IO)
 
     end in
-    let module Github = Github_core.Make(GHC)(Resolving_client) in (*
-    let get_token () = Github.(Monad.(run (
-        let note = "get_token via ocaml-github" in                                    
-        Token.create ~user:Github_creds.username ~pass:Github_creds.password ~note ()
-        >>~ function                                                                  
-        | Result auth ->                                                              
-          let token = Token.of_auth auth in                                           
-          prerr_endline (Token.to_string token);                                      
-          return ()                                                                   
-        | Two_factor _ -> embed (fail (Failure "get_token doesn't support 2fa, yet")) 
-      )))
+    let module Github = Github_core.Make(GHC)(Resolving_client) in 
+    let module Context = struct
+      let v () =
+        Lwt.return (Some (res, con))
+    end in
+    let module Inflator = struct
+      let inflate ?output_size buf =
+        match output_size with
+        | None   -> Some buf
+        | Some n ->
+          if Mstruct.length buf < n then None else Some (Mstruct.sub buf 0 n)
+
+      let deflate ?level:_ buf = buf
+    end in
+    let module Mirage_git_memory =
+      Irmin_mirage.Irmin_git.Memory(Context)(Inflator) in
+    let module Store =
+      Mirage_git_memory(Irmin.Contents.String)(Irmin.Ref.String)(Irmin.Hash.SHA1)
     in
-    let user token =
-      Github.(Monad.(run (User.current_info ~token ()
-                                     >|= Response.value))) >>= fun user ->
-      Lwt.return (Github_j.string_of_user_info user)
-    in *)
-    let issues local_repo token user repo =
-      let store local_repo path value =
-        Store.master task local_repo >>= fun primary ->
-        Store.update (primary "updating with issue body") path value
+     let module Sync = Irmin.Sync(Store) in
+        let config = Irmin_mirage.Irmin_git.config () in
+        let task = Irmin.Task.create ~date:(Int64.of_int (int_of_float (Clock.time ())))
+            ~owner:"MirageOS Irmin Scraperbot" in
+
+    let issues branch token user repo =
+      let store branch path value =
+        Store.update (branch "updating with issue body") path value
       in
       let open Github in
       let open Monad in
@@ -149,14 +145,11 @@ struct
               let path = Irmin.Path.String_list.of_hum (Printf.sprintf
                                                           "%s/%s/issues/%L/%L"
                                                           user repo issue_id comment_id) in
-              C.log c Github_t.(Printf.sprintf "  > %Ld: %s\n"
-                                  comment.issue_comment_id
-                                  comment.issue_comment_body);
-              Github_t.(store local_repo path comment.issue_comment_body)
+              Github_t.(store branch path comment.issue_comment_body)
             ) comments )
         ) issues
     in
-    let scrape_issues user token local_repo =
+    let scrape_issues user token branch =
       let user = "yomimono" in
       Github.(Monad.(run (
         let repos = User.repositories ~token ~user () in
@@ -164,7 +157,7 @@ struct
             C.log c Github_t.(repo.repository_full_name);
             match Github_t.(repo.repository_has_issues) with
             | true ->
-              issues local_repo token user (Github_t.(repo.repository_name))
+              issues branch token user (Github_t.(repo.repository_name))
             | false ->
               return ()
         ) repos
@@ -174,10 +167,18 @@ struct
     | `Error _ | `Ok [] | `Ok (_::_::_) -> L.log_error c "kv_ro error reading token"
     | `Ok (buf::[]) -> Lwt.return (Github.Token.of_string (Cstruct.to_string buf))
       >>= fun token ->
-      L.log_data c "token" (Cstruct.of_string (Github.Token.to_string token)) >>= fun () ->
+      C.log c "token read!";
+      let remote = Irmin.remote_uri "git://irmin-backup/local_issues" in
       Store.Repo.create config >>= fun repo ->
-      scrape_issues "yomimono" token repo >>= fun () ->
-    (* get_token () >>= fun () -> *)
-
-    Lwt.return_unit
+      Store.master task repo >>= fun primary ->
+      Sync.pull (primary "pull from backup server") remote `Update >>= function
+      | `Conflict s -> L.log_error c ("conflict: " ^ s)
+      | `Ok `Error -> L.log_error c "error syncing before our scrape :("
+      | `Ok `No_head | `Ok `Ok ->
+        C.log c "checked the backup server.  commencing scrape!";
+        scrape_issues "yomimono" token primary >>= fun () ->
+        (* sync irmin to db in dom0 *)
+        Sync.push (primary "push to backup server") remote >>= function
+        | `Error -> L.log_error c "error pushing data to remote repository"
+        | `Ok -> Lwt.return_unit
 end
