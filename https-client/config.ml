@@ -40,8 +40,9 @@ let client =
 
 let () =
   let (con, res) = build_stack default_console in
-  add_to_opam_packages [ "irmin"; "github"; "mirage-http" ] ;
-  add_to_ocamlfind_libraries [ "irmin"; "irmin.mem"; "irmin.git";
+  add_to_opam_packages [ "decompress"; "mirage-flow"; "irmin"; "github";
+                         "mirage-git"; "mirage-http" ] ;
+  add_to_ocamlfind_libraries [ "decompress"; "irmin"; "irmin.mem"; "irmin.git";
                                "irmin.mirage"; "github"; "mirage-http" ];
   register ~tracing "tls-client" [ client $ default_console $ default_clock $
                                    default_time $ res $ con $ disk ]

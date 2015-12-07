@@ -109,13 +109,54 @@ struct
         Lwt.return (Some (res, con))
     end in
     let module Inflator = struct
-      let inflate ?output_size buf =
-        match output_size with
-        | None   -> Some buf
-        | Some n ->
-          if Mstruct.length buf < n then None else Some (Mstruct.sub buf 0 n)
+      module IDBytes = struct
+        include Bytes
+        let concat = String.concat
+        let of_bytes t = t
+        let to_bytes t = t
+      end
+      module XInflator = Decompress.Inflate.Make(IDBytes)
+      module XDeflator = Decompress.Deflate.Make(IDBytes)
 
-      let deflate ?level:_ buf = buf
+      (* TODO: this is real pokey *)
+      let inflate ?output_size buf =
+        C.log c "inflating buffer: ";
+        Mstruct.hexdump buf;
+        let output = match output_size with
+          | None -> Bytes.create (Mstruct.length buf)
+          | Some n -> Bytes.create n
+        in
+        let inflator = XInflator.make (`String (0, (Mstruct.to_string buf))) output in
+        let rec eventually_inflate inflator acc =
+          match XInflator.eval inflator with
+          | `Ok ->
+            let res = Mstruct.of_string (IDBytes.concat "" (List.rev acc)) in
+            C.log c (Printf.sprintf "result is length %d: %s" (Mstruct.length
+                                                                res)
+                       (Mstruct.to_string res));
+            Some (Mstruct.of_string (IDBytes.concat "" (List.rev (acc))))
+          | `Error -> None
+          | `Flush ->
+            let tmp = Bytes.copy output in
+            XInflator.flush inflator;
+            eventually_inflate inflator (tmp :: acc)
+        in
+        eventually_inflate inflator []
+
+      let deflate ?level buf =
+        let output = Bytes.create (Cstruct.len buf) in
+        let deflator = XDeflator.make ~window_bits:((Cstruct.len buf)*8) (`String (0, (Cstruct.to_string buf))) output in
+        let rec eventually_deflate deflator acc =
+          match XDeflator.eval deflator with
+          | `Ok -> Cstruct.of_string (IDBytes.concat "" (List.rev (output::acc)))
+          | `Error -> failwith "Error deflating an archive :("
+          | `Flush ->
+            let tmp = Bytes.copy output in
+            XDeflator.flush deflator;
+            eventually_deflate deflator (tmp :: acc)
+        in
+        eventually_deflate deflator []
+
     end in
     let module Mirage_git_memory =
       Irmin_mirage.Irmin_git.Memory(Context)(Inflator) in
@@ -167,18 +208,25 @@ struct
     | `Error _ | `Ok [] | `Ok (_::_::_) -> L.log_error c "kv_ro error reading token"
     | `Ok (buf::[]) -> Lwt.return (Github.Token.of_string (Cstruct.to_string buf))
       >>= fun token ->
+      let rec read_and_sync primary remote =
+        scrape_issues "yomimono" token primary >>= fun () ->
+        C.log c "issue scrape to local in-memory store complete; updating local backup";
+        (* sync irmin to db in dom0 *) (*
+        Sync.push (primary "push to backup server") remote >>= function
+        | `Error -> L.log_error c "error pushing data to remote repository"
+        | `Ok -> *) Time.sleep 1.0 >>= fun () -> read_and_sync primary remote
+      in
       C.log c "token read!";
       let remote = Irmin.remote_uri "git://irmin-backup/local_issues" in
       Store.Repo.create config >>= fun repo ->
       Store.master task repo >>= fun primary ->
-      Sync.pull (primary "pull from backup server") remote `Update >>= function
+      (* Sync.pull (primary "pull from backup server") remote `Update >>= function
       | `Conflict s -> L.log_error c ("conflict: " ^ s)
       | `Ok `Error -> L.log_error c "error syncing before our scrape :("
-      | `Ok `No_head | `Ok `Ok ->
-        C.log c "checked the backup server.  commencing scrape!";
-        scrape_issues "yomimono" token primary >>= fun () ->
-        (* sync irmin to db in dom0 *)
-        Sync.push (primary "push to backup server") remote >>= function
-        | `Error -> L.log_error c "error pushing data to remote repository"
-        | `Ok -> Lwt.return_unit
+      | `Ok `No_head ->
+        C.log c "no head? no problem!";
+        read_and_sync primary remote
+      | `Ok `Ok ->
+        C.log c "checked the backup server.  commencing scrape!"; *)
+        read_and_sync primary remote
 end
