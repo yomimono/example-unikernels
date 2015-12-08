@@ -118,10 +118,7 @@ struct
       module XInflator = Decompress.Inflate.Make(IDBytes)
       module XDeflator = Decompress.Deflate.Make(IDBytes)
 
-      (* TODO: this is real pokey *)
       let inflate ?output_size buf =
-        C.log c "inflating buffer: ";
-        Mstruct.hexdump buf;
         let output = match output_size with
           | None -> Bytes.create (Mstruct.length buf)
           | Some n -> Bytes.create n
@@ -129,28 +126,38 @@ struct
         let inflator = XInflator.make (`String (0, (Mstruct.to_string buf))) output in
         let rec eventually_inflate inflator acc =
           match XInflator.eval inflator with
-          | `Ok ->
+          | `Ok n ->
             let res = Mstruct.of_string (IDBytes.concat "" (List.rev acc)) in
-            C.log c (Printf.sprintf "result is length %d: %s" (Mstruct.length
-                                                                res)
-                       (Mstruct.to_string res));
-            Some (Mstruct.of_string (IDBytes.concat "" (List.rev (acc))))
+            Mstruct.shift buf n;
+            Some res
           | `Error -> None
-          | `Flush ->
-            let tmp = Bytes.copy output in
-            XInflator.flush inflator;
-            eventually_inflate inflator (tmp :: acc)
+          | `Flush n ->
+            match XInflator.contents inflator with
+            | 0 -> 
+              let res = Mstruct.of_string (IDBytes.concat "" (List.rev acc)) in
+              Some res
+            | _ ->
+              let tmp = Bytes.copy output in
+              XInflator.flush inflator;
+              eventually_inflate inflator (tmp :: acc)
         in
         eventually_inflate inflator []
 
       let deflate ?level buf =
-        let output = Bytes.create (Cstruct.len buf) in
-        let deflator = XDeflator.make ~window_bits:((Cstruct.len buf)*8) (`String (0, (Cstruct.to_string buf))) output in
+        let output = Bytes.create 62 in
+        let deflator = XDeflator.make ~window_bits:15
+            (`String (0, (Cstruct.to_string buf))) output in
         let rec eventually_deflate deflator acc =
           match XDeflator.eval deflator with
-          | `Ok -> Cstruct.of_string (IDBytes.concat "" (List.rev (output::acc)))
+          | `Ok ->
+            C.log c (Printf.sprintf "%d items in the accumulator for deflation\n" (List.length acc));
+            let res = IDBytes.concat "" (List.rev acc) in
+            C.log c (Printf.sprintf "deflated buffer of %d bytes to %d bytes"
+                       (Cstruct.len buf) (String.length res));
+            Cstruct.of_string res
           | `Error -> failwith "Error deflating an archive :("
           | `Flush ->
+            C.log c (Printf.sprintf "flushing buffer of %d bytes" (XDeflator.contents deflator));
             let tmp = Bytes.copy output in
             XDeflator.flush deflator;
             eventually_deflate deflator (tmp :: acc)
@@ -209,24 +216,29 @@ struct
     | `Ok (buf::[]) -> Lwt.return (Github.Token.of_string (Cstruct.to_string buf))
       >>= fun token ->
       let rec read_and_sync primary remote =
-        scrape_issues "yomimono" token primary >>= fun () ->
-        C.log c "issue scrape to local in-memory store complete; updating local backup";
-        (* sync irmin to db in dom0 *) (*
+        (* scrape_issues "yomimono" token primary >>= fun () ->
+        C.log c "issue scrape to local in-memory store complete; updating local
+           backup"; *)
+        Store.read_exn (primary "read synced") ["delicious"] >>= fun buf ->
+        C.log c (Printf.sprintf "buf: %s" buf);
+        (* sync irmin to db in dom0 *) 
         Sync.push (primary "push to backup server") remote >>= function
         | `Error -> L.log_error c "error pushing data to remote repository"
-        | `Ok -> *) Time.sleep 1.0 >>= fun () -> read_and_sync primary remote
+          (* >>= fun () -> Time.sleep 1.0 >>= fun () -> read_and_sync primary
+             remote *)
+        | `Ok -> Time.sleep 1.0 >>= fun () -> read_and_sync primary remote
       in
       C.log c "token read!";
       let remote = Irmin.remote_uri "git://irmin-backup/local_issues" in
       Store.Repo.create config >>= fun repo ->
       Store.master task repo >>= fun primary ->
-      (* Sync.pull (primary "pull from backup server") remote `Update >>= function
+      Sync.pull (primary "pull from backup server") remote `Update >>= function
       | `Conflict s -> L.log_error c ("conflict: " ^ s)
       | `Ok `Error -> L.log_error c "error syncing before our scrape :("
       | `Ok `No_head ->
         C.log c "no head? no problem!";
         read_and_sync primary remote
       | `Ok `Ok ->
-        C.log c "checked the backup server.  commencing scrape!"; *)
+        C.log c "checked the backup server.  commencing scrape!";
         read_and_sync primary remote
 end
