@@ -196,18 +196,26 @@ struct
     in
     let scrape_issues user token branch =
       let user = "yomimono" in
-      Github.(Monad.(run (
-        let repos = User.repositories ~token ~user () in
-        Stream.iter (fun repo ->
-            C.log c Github_t.(repo.repository_full_name);
-            match Github_t.(repo.repository_has_issues) with
-            | true ->
-              issues branch token user (Github_t.(repo.repository_name))
-            | false ->
-              C.log c Github_t.("No issues for repository " ^ repo.repository_full_name);
-              return ()
-        ) repos
-        )))
+      Lwt.catch (fun () ->
+          Github.(Monad.(run (
+              let repos = User.repositories ~token ~user () in
+              Stream.iter (fun repo ->
+                  C.log c Github_t.(repo.repository_full_name);
+                  match Github_t.(repo.repository_has_issues) with
+                  | true ->
+                    issues branch token user (Github_t.(repo.repository_name))
+                  | false ->
+                    C.log c Github_t.("No issues for repository " ^ repo.repository_full_name);
+                    return ()
+                ) repos
+            )))
+        ) (fun exn -> match exn with
+        | Failure s ->
+          L.log_error c (Printf.sprintf "Could not contact the remote server
+          [%s] -- waiting then trying again" s) >>= fun () ->
+          Lwt.return_unit
+        | _ -> L.log_error c "Error -- attempting to soldier on."
+        )
     in
     let module Http_server = Cohttp_mirage.Server_with_conduit in
     let module Irmin_view = Irmin_http_server.Make(Http_server)(Date)(Store) in
