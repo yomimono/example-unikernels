@@ -156,9 +156,12 @@ struct
                        (Cstruct.len buf) (String.length res));
             Cstruct.of_string res
           | `Error -> failwith "Error deflating an archive :("
-          | `Flush ->
-            C.log c (Printf.sprintf "flushing buffer of %d bytes" (XDeflator.contents deflator));
-            let tmp = Bytes.copy output in
+          | `Flush n ->
+            C.log c (Printf.sprintf "flushing %d (%d) bytes from %d byte buffer" n
+                       (XDeflator.contents deflator)
+                       (Bytes.length output));
+            let tmp = Bytes.create n in
+            Bytes.blit_string output 0 tmp 0 n;
             XDeflator.flush deflator;
             eventually_deflate deflator (tmp :: acc)
         in
@@ -216,11 +219,9 @@ struct
     | `Ok (buf::[]) -> Lwt.return (Github.Token.of_string (Cstruct.to_string buf))
       >>= fun token ->
       let rec read_and_sync primary remote =
-        (* scrape_issues "yomimono" token primary >>= fun () ->
+        scrape_issues "yomimono" token primary >>= fun () ->
         C.log c "issue scrape to local in-memory store complete; updating local
-           backup"; *)
-        Store.read_exn (primary "read synced") ["delicious"] >>= fun buf ->
-        C.log c (Printf.sprintf "buf: %s" buf);
+           backup";
         (* sync irmin to db in dom0 *) 
         Sync.push (primary "push to backup server") remote >>= function
         | `Error -> L.log_error c "error pushing data to remote repository"
