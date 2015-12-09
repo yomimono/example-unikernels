@@ -174,7 +174,9 @@ struct
 
     let issues branch token user repo =
       let store branch path value =
-        Store.update (branch "updating with issue body") path value
+        let msg = Printf.sprintf "updating %s with issue text" path in
+        C.log c msg;
+        Store.update (branch msg) (Irmin.Path.String_list.of_hum path) value
       in
       let open Github in
       let open Monad in
@@ -187,9 +189,7 @@ struct
           >>= fun comments -> embed (
           Lwt_list.iter_p (fun comment ->
               let comment_id = Int64.to_int (Github_t.(comment.issue_comment_id)) in
-              let path = Irmin.Path.String_list.of_hum (Printf.sprintf
-                                                          "%s/%s/issues/%L/%L"
-                                                          user repo issue_id comment_id) in
+              let path = Printf.sprintf "%s/%s/issues/%L/%L" user repo issue_id comment_id in
               Github_t.(store branch path comment.issue_comment_body)
             ) comments )
         ) issues
@@ -204,14 +204,13 @@ struct
             | true ->
               issues branch token user (Github_t.(repo.repository_name))
             | false ->
+              C.log c Github_t.("No issues for repository " ^ repo.repository_full_name);
               return ()
         ) repos
         )))
     in
     let module Http_server = Cohttp_mirage.Server_with_conduit in
     let module Irmin_view = Irmin_http_server.Make(Http_server)(Date)(Store) in
-
-
     KV.read kv "token" 0 4096 >>= function
     | `Error _ | `Ok [] | `Ok (_::_::_) -> L.log_error c "kv_ro error reading token"
     | `Ok (buf::[]) -> Lwt.return (Github.Token.of_string (Cstruct.to_string buf))
