@@ -20,6 +20,10 @@ module Color = struct
   let blue   fmt = sprintf ("\027[36m"^^fmt^^"\027[m")
 end
 
+module Date = struct
+  let pretty date = Int64.to_string date
+end
+
 
 module Log (C: CONSOLE) = struct
 
@@ -204,6 +208,10 @@ struct
         ) repos
         )))
     in
+    let module Http_server = Cohttp_mirage.Server_with_conduit in
+    let module Irmin_view = Irmin_http_server.Make(Http_server)(Date)(Store) in
+
+
     KV.read kv "token" 0 4096 >>= function
     | `Error _ | `Ok [] | `Ok (_::_::_) -> L.log_error c "kv_ro error reading token"
     | `Ok (buf::[]) -> Lwt.return (Github.Token.of_string (Cstruct.to_string buf))
@@ -220,6 +228,11 @@ struct
       let remote = Irmin.remote_uri "git://irmin-backup/local_issues" in
       Store.Repo.create config >>= fun repo ->
       Store.master task repo >>= fun primary ->
+      let processor = Irmin_view.callback (primary "read for web server") ~strict:false in
+      let spec = Http_server.make ~callback:processor () in
+      Conduit_mirage.server (`TCP ((V4 Ipaddr.V4.any), 80)) >>= fun server ->
+      Http_server.connect con >>= function
+      | `Ok serve -> Lwt.async (fun () -> serve server spec);
       (* Sync.pull (primary "pull from backup server") remote `Update >>= function
       | `Conflict s -> L.log_error c ("conflict: " ^ s)
       | `Ok `Error -> L.log_error c "error syncing before our scrape :("
