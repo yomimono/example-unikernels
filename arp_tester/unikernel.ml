@@ -5,8 +5,8 @@ open OUnit
 module Main (C: CONSOLE) (K: KV_RO) = struct
   module P = Netif.Make(K)(OS.Time)
   module E = Ethif.Make(P)
-  module I = Ipv4.Make(E)(Clock)(OS.Time)
-  module A = Arpv4.Make(E)
+  module A = Arpv4.Make(E)(Clock)(OS.Time)
+  module I = Ipv4.Make(E)(A)
   module U = Udp.Make(I)
 
       (* unfortunately, arp isn't exposed in wire_structs nor in Arpv4, so
@@ -217,21 +217,22 @@ with Not_found -> Lwt.return `Success
       (* build interface on top of netif *)
       or_error c "pcap_netif" P.connect pcap_netif_id >>= fun p ->
       or_error c "ethif" E.connect p >>= fun e ->
-      or_error c "ipv4" I.connect e >>= fun i ->
+      or_error c "arpv4" A.connect e >>= fun a ->
+      or_error c "ipv4" (I.connect e) a >>= fun i ->
       or_error c "udpv4" U.connect i >>= fun u ->
 
       (* set up ipv4 statically *)
       I.set_ip i ip >>= fun () -> I.set_ip_netmask i nm >>= fun () ->
 
-      Lwt.return (p, e, i, u)
+      Lwt.return (p, e, a, i, u)
     in
-    let play_pcap (p, e, i, u) =
+    let play_pcap (p, e, a, i, u) =
       P.listen p (E.input
-                    ~arpv4:(fun buf -> I.input_arpv4 i buf)
+                    ~arpv4:(fun buf -> A.input a buf)
                     ~ipv4:(fun buf -> Lwt.return_unit)
                     ~ipv6:(fun buf -> Lwt.return_unit) e
                  ) >>= fun () ->
-      Lwt.return (p, e, i, u)
+      Lwt.return (p, e, a, i, u)
     in
     (* the capture contains a GARP from 192.168.2.7, so we should have an entry
        for that address in the arp cache now *)
@@ -250,15 +251,15 @@ x 6) on successful reception of an arp reply, we don't unnecessarily delay our r
     C.log c "testing that arp probes are sent for entries that shouldn't be in
     the cache...";
     setup_iface file ip nm >>= fun send_arp_test_stack ->
-    play_pcap send_arp_test_stack >>= fun (p, e, i, u) ->
+    play_pcap send_arp_test_stack >>= fun (p, e, a, i, u) ->
     test_send_arps p e u >>= fun result ->
     assert_equal ~printer `Success result;
 
     C.log c "testing that once a response is received, a query thread returns
     that response immediately...";
-    setup_iface file ip nm >>= fun (p, e, i, u) ->
+    setup_iface file ip nm >>= fun (p, e, a, i, u) ->
     Lwt.pick [
-      (play_pcap (p, e, i, u) >>= fun query_stack ->
+      (play_pcap (p, e, a, i, u) >>= fun query_stack ->
       Lwt.return (`Failure "return_on_reply: playback thread terminated
       first"));
       send_traffic u; (* these don't appear to actually be interleaved *)
@@ -267,19 +268,19 @@ x 6) on successful reception of an arp reply, we don't unnecessarily delay our r
 
     C.log c "testing that probes are retried...";
     setup_iface file ip nm >>= fun arp_query_retry_stack ->
-    play_pcap arp_query_retry_stack >>= fun (p, e, i, u) ->
+    play_pcap arp_query_retry_stack >>= fun (p, e, a, i, u) ->
     test_queries_retried p e u >>= fun result ->
     assert_equal ~printer `Success result;
 
     C.log c "testing that gratuitous arps are recorded in the cache...";
     setup_iface file ip nm >>= fun garp_reads_test_stack ->
-    play_pcap garp_reads_test_stack >>= fun (p, e, i, u) ->
+    play_pcap garp_reads_test_stack >>= fun (p, e, a, i, u) ->
     test_garp_was_read p e u >>= fun result ->
     assert_equal ~printer `Success result;
 
     C.log c "testing that entries are aged out...";
     setup_iface file ip nm >>= fun arp_aging_test_stack ->
-    play_pcap send_arp_test_stack >>= fun (p, e, i, u) ->
+    play_pcap send_arp_test_stack >>= fun (p, e, a, i, u) ->
     test_arp_aged_out p e u >>= fun result ->
     assert_equal ~printer `Success result;
 
