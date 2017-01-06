@@ -2,7 +2,7 @@ open Mirage
 
 let file_key =
   let doc = Key.Arg.info
-      ~doc:"The file to read for pcaps." [ "f" ; "file" ]
+      ~doc:"The file to read for pcaps." [ "file" ]
   in
   Key.(create "file" Arg.(opt ~stage:`Both string "packets.pcap" doc))
 
