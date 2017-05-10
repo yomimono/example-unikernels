@@ -102,7 +102,7 @@ let contributors = [
   "Balraj Singh";
   "Cedric Cellier";
   "Christiano Haesbaert";
-  "Daniel Bünzli";
+  "Daniel Buenzli";
   "Dan Williams";
   "Dave Scott";
   "David Kaloper";

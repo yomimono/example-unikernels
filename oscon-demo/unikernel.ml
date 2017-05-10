@@ -89,53 +89,16 @@ class credits = object(self)
       @@ fst (self#what rd));
     let body =
       let header, people = self#what rd in
-      let li fmt = Format.fprintf fmt "<li>%s</li>" in
-      let titles_css = "#titles {
-        position: absolute;
-        width: 18em;
-        height: 50em;
-        bottom: 0;
-        left: 50%;
-        margin-left: -9em;
-        font-size: 350%;
-        font-weight: bold;
-        text-align: justify;
-        overflow: hidden;
-        display: block;
-        transform-origin: 50% 100%;
-        transform: perspective(300px) rotateX(25deg);
-}" in
-let titles_after_css = "#titles:after
-{
-        position: absolute;
-        content: ' ';
-        left: 0;
-        right: 0;
-        top: 0;
-        bottom: 60%;
-        background-image: linear-gradient(top, rgba(0,0,0,1) 0%, transparent 100%);
-        pointer-events: none;
-}" in
-let titlecontent_css = "#titlecontent
-{
-        position: absolute;
-        top: 100%;
-        animation: scroll 100s linear 4s infinite;
-}
-
-@keyframes scroll {
-        0% { top: 100%; }
-        100% { top: -120%; }
-}" in
+let li fmt = Format.fprintf fmt "<li>%s</li>" in
       Format.asprintf
         "<html>
-<head><style media=\"screen\" type=\"text/css\">%s%s%s </style></head>
+<head><style media=\"screen\" type=\"text/css\">%s</style></head>
 <body><div id=\"titles\"><div id=\"titlecontent\">
 <h1>%s</h1>
 <ul>%a</ul>
         </div></div>
 </body></html>\n"
-        titles_css titles_after_css titlecontent_css
+        Css.crawl_style
         header Fmt.(list li) people
     in
     Wm.continue (`String body) rd
