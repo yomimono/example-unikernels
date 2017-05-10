@@ -24,7 +24,7 @@ class credits = object(self)
 
   (* Only allow GET requests to this resource *)
   method allowed_methods rd =
-    Wm.continue [`GET] rd
+Wm.continue [`POST; `GET] rd
 
   (* Setup the resource to handle multiple content-types. Webmachine will
    * perform content negotiation as described in RFC 7231:
@@ -81,7 +81,7 @@ class credits = object(self)
         | "topkg" -> Names.topkg
         in
       (name, l)
-    with Match_failure _ | Not_found -> ("contributors", Names.contributors)
+    with Match_failure _ | Not_found -> ("MirageOS 3", Names.contributors)
 
   (* Returns an html-based representation of the resource *)
   method private to_html rd =
@@ -93,10 +93,14 @@ let li fmt = Format.fprintf fmt "<li>%s</li>" in
       Format.asprintf
         "<html>
 <head><style media=\"screen\" type=\"text/css\">%s</style></head>
-<body><div id=\"titles\"><div id=\"titlecontent\">
-<h1>%s</h1>
+<body><div class=\"fade\"></div>
+<section class=\"star-wars\">
+<div class=\"crawl\">
+<div class=\"title\">
+<h1>heartfelt thanks to these folks who worked on %s</h1>
+</div>
 <ul>%a</ul>
-        </div></div>
+        </div></section>
 </body></html>\n"
         Css.crawl_style
         header Fmt.(list li) people
@@ -120,8 +124,9 @@ let start _clock http =
    *
    *   [Wm.Rd.lookup_path_info "what" rd]
    *)
-  let routes = [
-     ("/:what"      , fun () -> new credits);
+let routes = [
+     ("/"           , fun () -> new credits);
+   (*   ("/:what"      , fun () -> new credits); *)
   ] in
   let callback (_ch,_conn) request body =
     let open Cohttp in

@@ -34,7 +34,7 @@ let crawl_style =
   position: relative;
   top: 99999px;
   transform-origin: 50% 100%;
-  animation: crawl 60s linear;
+  animation: crawl 30s linear;
 }
 
 .crawl > .title {
