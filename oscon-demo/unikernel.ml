@@ -126,7 +126,7 @@ let start _clock http =
    *)
 let routes = [
      ("/"           , fun () -> new credits);
-   (*   ("/:what"      , fun () -> new credits); *)
+     ("/:what"      , fun () -> new credits);
   ] in
   let callback (_ch,_conn) request body =
     let open Cohttp in
